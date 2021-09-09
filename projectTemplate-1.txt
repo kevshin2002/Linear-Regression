@@ -1,0 +1,183 @@
+
+
+
+main:
+
+////////////////////////////////////
+// Prepare to call train function //
+////////////////////////////////////
+
+//EXAMPLE: HOW TO LOAD DATA
+
+//Get learning rate
+LDA X0, arraySize 
+LDUR X0, [X0, #0]  //arraySize
+LDA X1, array //arrayAddress
+LDA X2, epochs
+LDUR X2, [X2, #0] //epoch number
+
+LDA X9, absoluteLossThresh
+LDURS S8, [X9, #0] // absoluteLossThresh
+
+LDA X9, epsilon
+LDURS S9, [X9, #0] // epsilon 
+
+LDA X9, learningRate
+LDURS S2, [X9, #0]
+
+LDA X9, minusTwoInverseN
+LDURS S3 [X9, #0] // MinusTwoInverseN
+
+LDA X9, inverseN
+LDURS S19, [X9, #0] //inverseN
+
+LDA X9, xMean
+LDURS S23, [X9, #0] // xMean
+
+LDA X9, xSD
+LDURS S24, [X9, #0] //xSd
+
+LDA X9, yMean
+LDURS S25, [X9, #0] // yMean
+
+LDA X9, ySD
+LDURS S26, [X9, #0] //ySD
+
+LDA X9, condition
+LDURS S15, [X9, #0] // condition
+
+LDA X9, zeroFloat
+
+
+
+
+
+//Load data from SOCRdata.txt into registers and call train
+
+BL train
+pre-stop:
+ADD XZR, XZR, XZR // junk code just so that the assembler knows this label exists
+stop
+
+
+
+// need to save LR, X1, i counter, 
+////////////////////////////////////
+// Write the train function       //
+////////////////////////////////////
+// Int Input: X0: arraySize, X1: array address, X2: epoch number
+// Single Input: S0: m, S1: c, S2: learning rate,  S3: -2/arraySize
+// Output: S0: m, S1: c, S7: loss
+train:
+    SUBI SP, SP, #40
+    STUR LR, [SP, #0] // store LR for main function
+    STUR X1, [SP, #8] // store dataset address
+    ADD X19, XZR, XZR // reset incrememter for train loop
+    LDURS S0, [X9, #0] // m = 0
+    LDURS S1, [X9, #0] // c = 0
+
+    TrainLoop:
+    LDURS S10 [X9 #0] // D_m = 0 and reset
+    LDURS S11 [X9 #0] // D_c = 0 and reset
+    LDUR X1, [SP, #8] // load original dataset address
+    ADD X10, XZR, XZR // reset incrementer for nested train loop
+
+   
+
+             NestedTrainLoopIntro: 
+             LDURS S20, [X1, #0] // dataset[j][0] // x
+             LDURS S21, [X1, #4] // dataset[j][1] // y 
+             FSUBS S14, S20, S21 // x - y
+             FCMPS S14, S15 // x - y > -2           
+             B.LT TSA_Train
+             NestedTrainLoopOutro:
+             FMULS S13, S20, S0 // M*dataset[j][0]
+             FADDS S13, S13, S1 // M*dataset[j][0] + c
+             FSUBS S13, S21, S13 // dataset[j][1] - M*dataset[j][0] + c
+             FADDS S11, S11, S13 // D_c += dataset[j][1] - M*dataset[j][0] + C
+             FMULS S12, S20, S13 // dataset[j][0] * dataset[j][1] - M*dataset[j][0] + c
+             FADDS S10, S10, S12 // D_m += dataset[j][0] * dataset[j][1] - M*dataset[j][0] + c      
+             ADDI X1, X1, #8 // add 1 register ( needs to be saved)
+             ADDI X10, X10, #1 // j++
+             SUBS XZR, X0, X10 // dataset - j
+             B.NE NestedTrainLoopIntro
+             
+            
+             
+
+    FMULS S10, S10, S3 // D_m *= -2/dataset.size()
+    FMULS S11, S11, S3 // D_c *= -2/dataset.size()
+    FMULS S16, S2, S10 // lr * D_m
+    FMULS S17, S2, S11 // lr * D_c
+    FSUBS S0, S0, S16 // M - lr * D_m
+    FSUBS S1, S1, S17 // C - lr * D_c
+    STUR X19, [SP, #16]
+    BL Loss
+    LDUR X19, [SP, #16]
+    
+    LDUR LR, [SP, #0]
+    FCMPS S7, S8 // loss - absolute 
+    B.LT pre-stop
+   LDURS S18, [SP, #24] // load in previousLoss into S18
+    FSUBS S18, S7, S18 // loss - prevLoss
+    FCMPS S18, S9 // epsilon
+    B.LT pre-stop 
+    STURS S7, [SP, #24] // store prevLoss
+    
+    ADDI X19, X19, #1 // i++
+    SUBS XZR X2, X19 // epochs - incremember or condition
+    B.NE TrainLoop
+ 
+    ADDI SP, SP, #40 // de-allocate stack
+    BR LR
+
+////////////////////////////////////
+// Write the loss function        //
+////////////////////////////////////
+//Calculate the loss against a set of data
+// Int Input: X0: arraySize, X1: array address
+// Single Input: S0: m, S1: c
+Loss:
+ADD X19, XZR, XZR // reset i counter
+LDUR X1, [SP, #8] // load in original dataset address
+STUR LR, [SP, #32] // store BL Loss + 4 address
+LDURS S7, [X9, #0] // reset loss
+    LossLoopIntro:
+    LDURS S20, [X1, #0] // dataset[i][0] // first half of register
+    LDURS S21, [X1, #4] // dataset[i][1] // second half of register
+    FSUBS S22, S20, S21 // x - y
+    FCMPS S22, S15 // x - y > -2           
+    B.LT TSA_Loss
+
+    LossLoopOutro:
+    FMULS S20, S20, S0 // m*dataset[i][0] 
+    FADDS S20, S20, S1 // m*dataset[i][0] + c
+    FSUBS S20, S21, S20 // dataset[i][1] - m*dataset[i][0] + C
+    FMULS S20, S20, S20 // powered
+    FADDS S7, S7, S20 // lossSum += powered
+    ADDI X19, X19, #1 // i++
+    ADDI X1, X1, #8 // dataset[i][0] < X1 holds the array address so if I add by increments of 8, that increases by 1 register.
+    SUBS XZR X0, X19 // arraysize - i
+    B.NE LossLoopIntro
+
+            Post-LossLoopIntro:
+            FMULS S7, S7, S19   // loss -= inverseN
+            LDUR LR, [SP, #32] // load in BL Loss + 4 address
+            BR LR  // return with S7
+    //loss = 1/n * sum((yi-Y_pred)^2)
+    //return the loss in S7
+
+TSA_Loss:
+BL Normalization
+B LossLoopOutro
+
+TSA_Train:
+BL Normalization
+B NestedTrainLoopOutro
+
+Normalization:
+FSUBS S20, S20, S23 // dataset[j][0] - mean
+FDIVS S20, S20, S24 // (dataset[j][0] - mean) /SD
+FSUBS S21, S21, S25 // dataset[j][1] - mean
+FDIVS S21, S21, S26 // (dataset[j][1] - mean) /SD
+BR LR
